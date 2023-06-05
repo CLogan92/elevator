@@ -1,8 +1,6 @@
-
 from enum import Enum
 import threading
 import time
-import sys
 
 # Design an elevator:
 # What do elevators do?  
@@ -11,23 +9,40 @@ import sys
 #         E.g: If an elevator is going up, and there are other people on other floors going up, it'll stop there, and pick the people up, and keep moving.
 #              Once there are no more floors going up (or it's at the max floor) then it'll service people going down.  
 #              This isn't a FIFO, rather it's more event driven... 
-#              It's not a FIFO, because if Floor 5 presses up before Floor 3 does, the elevator will stop at 3 first, because it's traveling that direction!
-# Things not to consider right now: 
-#   -> Weight, or number of occupants.  This is a cattle car elevator. 
+#              It's not a FIFO, because if an elevator is traveling up, and Floor 5 presses up before Floor 3 does, the elevator will stop at 3 first, 
+#              because it's before 5, and is traveling that up!  Vice versa if the elevator were traveling down.
 
-# So, what do we need?  
-# We need to know how many floors there are
-#   Floor 0 = Ground Floor
-#   1st Floor = 1, etc.
-NUM_OF_FLOORS = 3 
+# Things to be implemented later:
+#   -> Multiple passengers.  
+#       1.) At the moment we're only picking up and dropping off one passenger at a time.  Something that can definitely be expanded on later
+#           by using lists.  
+#       2.) Some logic improvements will need to be done to ensure that we pick up passengers going in the same direction e.g: Elevators that are 
+#           going up, pick up other passengers who are also going up and ignore those who are wanting to go down until the elevator is done going up. 
+#       3.) Likewise, multiple passengers boarding but going to multiple floors, like I said, adding lists and using '.remove' when we reached the first floor 
+#           in that direction.
+#   -> Multiple elevators.  
+#       This shouldn't be overly difficult to expand upon, we can create X amount of threads which represent each elevator, some logic would need to be done to
+#       handle which elevator is picking up which person, it's not a race to see who picks up the passenger first. 
+#   -> Event Driven.
+#       Since we're running in a thread, we can implement some kind of signal that can run instead of just some simple sleep, do mechanic...
+#       Kinda like Pyqt Signal Emits
+
+# Assumptions
+#   -> We're not using the direction mechanism that all elevators use.  Instead we run through some math and check if which direction we want to go from there.
+#   -> We're not restricting which elevators are going to which floors, some high rise elevators only service certain select floors, and they have multiple elevators.
+#   -> This elevator is only going up and down.
+#   -> Passengers are willing to wait for the elevators, and ride them, instead of taking the stairs. 
 
 # A small value check to see if we can shutdown after so long in IDLE. 
-ELEVATOR_WAIT_CNT = 3
+ELEVATOR_WAIT_CNT = 4
 
 # A small second count which indicates how long we want the thread to sleep for
 ELEVATOR_SLEEP_SEC = 2
 
-# Elevators can only go up and down...
+# Time for the passengers to wait before checking elevator state, also allows thread to sleep and not go crazy with sys resources. 
+PASSENGER_WAIT_SEC = 1
+
+# Elevators can only go up and down... I guess some could go sideways, but we're not doing that right now. 
 class ElevatorDirection(Enum):
     UP   = 1
     DOWN = 2
@@ -38,23 +53,24 @@ class ElevatorState(Enum):
     MOVING  = 1 # Up or down
     STOPPED = 2 # Picking people up, or dropping people off
 
+# We need to actually control the elevator doors, don't need people trying to jump out of the elevator because the doors are open!
 class ElevatorDoorState(Enum):
-    OPEN = 0
+    OPEN   = 0
     CLOSED = 1
 
 # This is the panel that is outside the elevator doors that a new passenger would press to request the elevator
 # We'll need to know which floor the request came in on, and which direction they would like to go
 class ExtPanel(object):
     def __init__(self):
-        self.floorNum = 0 # The floor that the up or down button was pressed on
+        self.floorNum         = 0 # Which floor was the elevator requested on? 
         self.desiredDirection = ElevatorDirection.UP # The up or or down button which was pressed
-        self.btnPressed = False
+        self.btnPressed       = False # A smalls signal which tells the controller that someone requested the elevator
 
     # Take in which floor we received the request for, and what direction they want to go.
     def RequestElevator(self, floorNum, direction:ElevatorDirection):
-        self.floorNum = floorNum
+        self.floorNum         = floorNum
         self.desiredDirection = direction
-        self.btnPressed = True
+        self.btnPressed       = True
 
     def CleanupExternalPanel(self):
         self.btnPressed = False
@@ -63,15 +79,14 @@ class ExtPanel(object):
 # We'll need to know which floor they want to go to, 
 class IntPanel(object):
     def __init__(self):
-        self.numOfBtns = NUM_OF_FLOORS -1
-        self.floorBtnPrsd = 0
-        self.hasABtnBeenPrsd = False
+        self.floorBtnPressed = 0 # Which floor is the passenger trying to go to?
+        self.hasABtnBeenPrsd = False # Another signal which tells the controller than the passenger has pressed a button to change floors.
 
     def FloorBtnPressed(self, floorBtnPrsd):
         self.floorBtnPressed = floorBtnPrsd
         self.hasABtnBeenPrsd = True
 
-    def CleanupInternalPannel(self):
+    def CleanupInternalPanel(self):
         self.floorBtnPressed = 0
         self.hasABtnBeenPrsd = False
 
@@ -81,7 +96,7 @@ class Elevator():
     def __init__(self):
         self.elevatorState    = ElevatorState.IDLE
         self.curElevatorFloor = 0
-        self.desiredFloor     = 0 # TODO: Make this a list, so we can append floors.
+        self.desiredFloor     = 0
         self.elevatorDir      = ElevatorDirection.UP
         self.elevatorDoor     = ElevatorDoorState.CLOSED
 
@@ -91,34 +106,32 @@ class Elevator():
 
         print("Done setting up elevator")
 
+
     def MoveElevator(self, elevatorDir, desiredFloor):
         if (self.curElevatorFloor != desiredFloor):
-            print ("Elevator moving to floor %d" % desiredFloor)
-
-            if (self.elevatorDir.UP):
-                # TODO: Check if people want off on this floor.
-                # TODO: Verify that elevator can't fly through the roof.
+            # Update the current floor the elevator is according to the direction of travel.
+            if (elevatorDir == ElevatorDirection.UP):
                 self.curElevatorFloor += 1
             else:
-                # TODO: Check if people want off on this floor.
-                # TODO: Verify that elevator can't crash into the ground
                 self.curElevatorFloor -= 1
 
-            print ("Elevator going %s and is currently on floor %d" % (self.elevatorDir.UP.name, self.curElevatorFloor))
+            print ("\t\tElevator going %s, is currently on floor %d, and is heading to %d" % (elevatorDir.name, self.curElevatorFloor, desiredFloor))
         else:
-            print("Ding!  Reached desired floor: %d" % self.desiredFloor)
+            # Note:  That despite stopping on the desired floor, there will still be a small delay before the doors open... 
+            # I think this is kinda realistic, so I'll keep it that way. :) 
+            # Otherwise if this is not desirable, we can always do a check in the main loop, and continue so that we open the doors immediately. 
+            print("\t\tDing!  Reached desired floor: %d" % self.desiredFloor)
             self.curElevatorFloor = self.desiredFloor
             self.elevatorState = ElevatorState.STOPPED # Stop to let the people off.
 
-            # TODO: Check if there's anymore floors to stop at, if not, go to IDLE.
 
     def ChangeElevatorDir(self):
         # If our current floor is negative, we know we're below the desired floor, move up.
-        # TODO: There are posibilities where there are basements, so need to check that this still works in that case.
-        if (self.curElevatorFloor - self.desiredFloor < 0):
+        if (self.desiredFloor - self.curElevatorFloor > 0):
             self.elevatorDir = ElevatorDirection.UP
-        elif (self.curElevatorFloor - self.desiredFloor > 0):
+        else:
             self.elevatorDir = ElevatorDirection.DOWN
+
 
     def CheckExtPannels(self):
         # If the req elevator button has been pressed, gather which floor it was on, and the direction
@@ -127,10 +140,27 @@ class Elevator():
             return (self.externalPanel.btnPressed, self.externalPanel.desiredDirection, self.externalPanel.floorNum)
         return (False, 0, 0)
     
+
     def ChangeElevatorDoorState(self, doorState : ElevatorDoorState):
         self.elevatorDoor = doorState
-        print ("Elevator doors are now %s" % doorState.name)
+        print ("\t\tElevator doors are now %s" % doorState.name)
     
+
+    def DeterminePassengerLocation(self, passengerFloor):
+        if (self.curElevatorFloor == passengerFloor):
+            # Passenger is on the same floor that the elevator is currently on!
+            # Let the controller open the doors for us.
+            # Cleanup the external panel as we are already on the same floor as the passenger. 
+            print ("\t\tElevator is on same floor as new passenger.")
+            self.elevatorState = ElevatorState.STOPPED
+            self.externalPanel.CleanupExternalPanel()
+        else:
+            print ("\t\tElevator detects new passenger on another floor.")
+            self.desiredFloor = passengerFloor
+            self.ChangeElevatorDir()
+            self.elevatorState = ElevatorState.MOVING
+
+
     # A thread which handles the work that the elevator needs to do! 
     def ElevatorController(self):
         elevReq = False
@@ -138,103 +168,128 @@ class Elevator():
         elevatorIdleCnt = 0
         newDir = 0
         newFloor = 0
-        # TODO make this interruptable so we can actually quit when we want.
+        # TODO make this interruptible so we can actually quit when we want.
         while (True):
-            # Append Desired Floor
+            # Get Desired Floor
             (elevReq, newDir, newFloor) = self.CheckExtPannels()
 
             if (elevReq == False and self.elevatorState == ElevatorState.IDLE):
-                print ("Nothing to do")
+                print ("\t\tElevator has nothing to do")
                 elevatorShutdownCnt += 1
 
                 if (elevatorShutdownCnt >= ELEVATOR_WAIT_CNT):
                     # We've been idle for 5 counts now, shut down thread.
+                    print ("\t\tElevator Shutting Down")
                     break
             else:
                 # We've gotten here because the elevator needs to do something...
                 if (self.elevatorState == ElevatorState.IDLE):
-                    self.elevatorState = ElevatorState.MOVING
-                    self.MoveElevator(newDir, newFloor)
+                    self.DeterminePassengerLocation(newFloor)
+                    continue
 
-                    if (self.curElevatorFloor == newFloor):
-                        self.desiredFloor = newFloor
-                        self.ChangeElevatorDoorState(ElevatorDoorState.OPEN)
-                        self.externalPanel.CleanupExternalPanel()
-                        elevReq = False
-                # We've been stopped for one sleep cycle, passenger should've gotten on by now, I realize that 
-                # it can take longer than 2 seconds, but this is in an ideal world...
                 elif (self.elevatorState == ElevatorState.STOPPED):
+                    # First check if any passenger has pressed any of the internal floor buttons.  
                     if (self.internalPanel.hasABtnBeenPrsd == True):
-                        elevatorIdleCnt = 0
-                        self.ChangeElevatorDir()
-                        self.ChangeElevatorDoorState(ElevatorDoorState.CLOSED)
-                        self.desiredFloor = self.internalPanel.floorBtnPressed
-                        self.MoveElevator(self.elevatorDir, self.desiredFloor)
+                        print ("\t\tElevator's internal button pressed, blast the elevator music and let's go.")
+                        # Update Elevator's state, we are now able to move, because passenger pressed internal button
                         self.elevatorState = ElevatorState.MOVING
-                        self.internalPanel.CleanupInternalPannel()
+
+                        # Close the doors so the elevator can actually move. 
+                        self.ChangeElevatorDoorState(ElevatorDoorState.CLOSED)
+                        
+                        # Read in which floor button the passenger selected. 
+                        self.desiredFloor = self.internalPanel.floorBtnPressed
+
+                        # Determine which way (Up or Down) we need to go based off what floor we're on already.
+                        # TODO actually use the "Direction" that the passenger chose. 
+                        self.ChangeElevatorDir()
+
+                        # Actually move the elevator
+                        self.MoveElevator(self.elevatorDir, self.desiredFloor)
+
+                        # Cleanup both the internal/external panels 
+                        self.internalPanel.CleanupInternalPanel()
+                        self.externalPanel.CleanupExternalPanel()
+                        elevatorIdleCnt = 0
+                    # Else, the passenger has likely got to their floor
                     else:
+                        # Open the doors, since we're stopped
                         if (self.elevatorDoor == ElevatorDoorState.CLOSED):
                             self.ChangeElevatorDoorState(ElevatorDoorState.OPEN)
 
-                        print ("Waiting for riders to get on or off and waiting for someone to press internal floor button")
+                        if (elevReq == True):
+                            self.DeterminePassengerLocation(newFloor)
+                            # Continue so that we can reach the passenger as quick as we can without sleeping.
+                            continue
+
+                        print ("\t\tElevator waiting for riders to get on or off and waiting for someone to press internal floor button")
                         elevatorIdleCnt += 1
 
                         if elevatorIdleCnt >= ELEVATOR_WAIT_CNT:
-                            print ("Elevator has been stopped for some time, going to idle state.")
+                            print ("\t\tElevator has been stopped for some time, going to idle state.")
                             self.elevatorState = ElevatorState.IDLE
 
                 elif (self.elevatorState == ElevatorState.MOVING):
+                    # Close the doors, since we're getting ready to move
+                    if (self.elevatorDoor == ElevatorDoorState.OPEN):
+                        self.ChangeElevatorDoorState(ElevatorDoorState.CLOSED)
                     self.MoveElevator(self.elevatorDir, self.desiredFloor)
 
             # Sleep for some seconds so thread doesn't go wild with sys resources. 
-            print ("Sleeping for %d seconds" % ELEVATOR_SLEEP_SEC)
+            print ("\t\tElevator thread sleeping for %d seconds" % ELEVATOR_SLEEP_SEC)
             time.sleep(ELEVATOR_SLEEP_SEC)
 
 
 if __name__ == '__main__':
 
+    # Here's the list of passengers, what floor they're on, and which floor they want to go to, and which direction they want to travel
+    currentFloor = [0, 5, 7, 0, 3, -2]
+    desiredFloor = [3, 0, 2, 3, -1, 0]
+    elevatorDir  = [ElevatorDirection.UP, ElevatorDirection.DOWN, ElevatorDirection.DOWN, ElevatorDirection.UP, ElevatorDirection.DOWN, ElevatorDirection.UP] # TODO this isn't actually being used right now
+
+    if (len(currentFloor) != len(desiredFloor)):
+        raise Exception ("Current Floors and Desired Floors are not the same length!")
+    
     # Create an elevator for the building.
     bldgElevatr = Elevator()
+
+    # Create a thread which controls the elevator
     elevThread = threading.Thread(target=bldgElevatr.ElevatorController)
     elevThread.start()
     NotOnDesiredFloor = True
-    currentFloor = [0, 5, 7]
-    desiredFloor = [3, 0, 2]
-    elevatorDir  = [ElevatorDirection.UP, ElevatorDirection.DOWN, ElevatorDirection.DOWN]
-    j = 0
+    timethen = 0
 
-    for i in range(3):
-
-        print ("I wanna go %s!" % elevatorDir[i].name)
+    for i in range(len(currentFloor)):
+        timethen = time.time()
+        print ("Passenger %d wants to go %s!" % (i + 1, elevatorDir[i].name))
         bldgElevatr.externalPanel.RequestElevator(currentFloor[i], elevatorDir[i])
 
-        # Wait for the elevator to land on floor AND have the doors open.
+        print ("Passenger is waiting for Elevator.")
+        # We have to wait for both the elevator to be on the same floor, as well as the doors to be open before we can stop waiting.
         while (bldgElevatr.curElevatorFloor != currentFloor[i] or bldgElevatr.elevatorDoor != ElevatorDoorState.OPEN):
-            print ("Waiting on Elevator...")
-            time.sleep(2)
-            j += 1
+            time.sleep(PASSENGER_WAIT_SEC)
+        else:
+            print ("Passenger sees that elevator has arrived, and doors are open!")
 
-            if (j >= ELEVATOR_WAIT_CNT*5):
-                print ("Screw this, I'm taking the stairs!")
-                exit()
-        j = 0
-        print ("Oh the elevator is here!")
+        print ("Passenger is getting on elevator")
         bldgElevatr.internalPanel.FloorBtnPressed(desiredFloor[i])
-        print ("Pressing button to go to floor %d" % desiredFloor[i])
+        print ("Passenger pressed button to go to floor %d" % desiredFloor[i])
 
         while (NotOnDesiredFloor == True):
             if (desiredFloor[i] != bldgElevatr.curElevatorFloor):
-                print ("Waiting to get to my floor")
-                time.sleep(2)
+                print ("Passenger riding elevator to their floor")
             else:
                 if (bldgElevatr.elevatorDoor == ElevatorDoorState.OPEN):
-                    print ("I'm on my floor!")
                     NotOnDesiredFloor = False
                 else:
-                    print ("Waiting on the doors to open")
-                time.sleep(1)
+                    print ("Passenger waiting for elevator doors to open")
 
-        NotOnDesiredFloor = True
+            time.sleep(PASSENGER_WAIT_SEC)
+        else:
+            print ("Passenger left elevator.")
 
+            # Reset local var for next passenger
+            NotOnDesiredFloor = True
 
-
+            print ("It took %d seconds to take the passenger from floor %d to floor %d." % ((time.time() - timethen), currentFloor[i], desiredFloor[i]))
+            print("\n\n")
