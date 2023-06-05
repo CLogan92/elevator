@@ -99,6 +99,7 @@ class Elevator():
         self.desiredFloor     = 0
         self.elevatorDir      = ElevatorDirection.UP
         self.elevatorDoor     = ElevatorDoorState.CLOSED
+        self.elevatorRunning  = True
 
         # Setup our interfaces:
         self.externalPanel = ExtPanel()
@@ -161,6 +162,13 @@ class Elevator():
             self.elevatorState = ElevatorState.MOVING
 
 
+    def EmergencyStop(self):
+        self.elevatorState = ElevatorState.STOPPED
+        self.ChangeElevatorDoorState(ElevatorDoorState.OPEN)
+        print ("\t\tElevator is stopping on floor %d" % self.curElevatorFloor)
+        self.elevatorRunning = False
+
+
     # A thread which handles the work that the elevator needs to do! 
     def ElevatorController(self):
         elevReq = False
@@ -168,8 +176,8 @@ class Elevator():
         elevatorIdleCnt = 0
         newDir = 0
         newFloor = 0
-        # TODO make this interruptible so we can actually quit when we want.
-        while (True):
+
+        while (self.elevatorRunning == True):
             # Get Desired Floor
             (elevReq, newDir, newFloor) = self.CheckExtPannels()
 
@@ -259,37 +267,44 @@ if __name__ == '__main__':
     NotOnDesiredFloor = True
     timethen = 0
 
-    for i in range(len(currentFloor)):
-        timethen = time.time()
-        print ("Passenger %d wants to go %s!" % (i + 1, elevatorDir[i].name))
-        bldgElevatr.externalPanel.RequestElevator(currentFloor[i], elevatorDir[i])
+    try:
+        for i in range(len(currentFloor)):
+            timethen = time.time()
+            print ("Passenger %d wants to go %s!" % (i + 1, elevatorDir[i].name))
+            bldgElevatr.externalPanel.RequestElevator(currentFloor[i], elevatorDir[i])
 
-        print ("Passenger is waiting for Elevator.")
-        # We have to wait for both the elevator to be on the same floor, as well as the doors to be open before we can stop waiting.
-        while (bldgElevatr.curElevatorFloor != currentFloor[i] or bldgElevatr.elevatorDoor != ElevatorDoorState.OPEN):
-            time.sleep(PASSENGER_WAIT_SEC)
-        else:
-            print ("Passenger sees that elevator has arrived, and doors are open!")
-
-        print ("Passenger is getting on elevator")
-        bldgElevatr.internalPanel.FloorBtnPressed(desiredFloor[i])
-        print ("Passenger pressed button to go to floor %d" % desiredFloor[i])
-
-        while (NotOnDesiredFloor == True):
-            if (desiredFloor[i] != bldgElevatr.curElevatorFloor):
-                print ("Passenger riding elevator to their floor")
+            print ("Passenger is waiting for Elevator.")
+            # We have to wait for both the elevator to be on the same floor, as well as the doors to be open before we can stop waiting.
+            while (bldgElevatr.curElevatorFloor != currentFloor[i] or bldgElevatr.elevatorDoor != ElevatorDoorState.OPEN):
+                time.sleep(PASSENGER_WAIT_SEC)
             else:
-                if (bldgElevatr.elevatorDoor == ElevatorDoorState.OPEN):
-                    NotOnDesiredFloor = False
+                print ("Passenger sees that elevator has arrived, and doors are open!")
+
+            print ("Passenger is getting on elevator")
+            bldgElevatr.internalPanel.FloorBtnPressed(desiredFloor[i])
+            print ("Passenger pressed button to go to floor %d" % desiredFloor[i])
+
+            while (NotOnDesiredFloor == True):
+                if (desiredFloor[i] != bldgElevatr.curElevatorFloor):
+                    print ("Passenger riding elevator to their floor")
                 else:
-                    print ("Passenger waiting for elevator doors to open")
+                    if (bldgElevatr.elevatorDoor == ElevatorDoorState.OPEN):
+                        NotOnDesiredFloor = False
+                    else:
+                        print ("Passenger waiting for elevator doors to open")
 
-            time.sleep(PASSENGER_WAIT_SEC)
-        else:
-            print ("Passenger left elevator.")
+                time.sleep(PASSENGER_WAIT_SEC)
+            else:
+                print ("Passenger left elevator.")
 
-            # Reset local var for next passenger
-            NotOnDesiredFloor = True
+                # Reset local var for next passenger
+                NotOnDesiredFloor = True
 
-            print ("It took %d seconds to take the passenger from floor %d to floor %d." % ((time.time() - timethen), currentFloor[i], desiredFloor[i]))
-            print("\n\n")
+                print ("It took %d seconds to take the passenger from floor %d to floor %d." % ((time.time() - timethen), currentFloor[i], desiredFloor[i]))
+                print("\n\n")
+    except KeyboardInterrupt:
+        print ("Ctrl+C Pressed! Need to cleanup the threads and exit.")
+        bldgElevatr.EmergencyStop()
+
+        print ("Exiting...")
+        exit()
